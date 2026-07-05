@@ -1,81 +1,46 @@
 # BTC DCA — Regime-Aware Strategy
 
-## What this is
-
-A weekly investing tool that splits your paycheck between Bitcoin and
-everything else, based on where BTC sits in its market cycle and what
-percentage of your portfolio it already occupies.
-
-You set a handful of numbers at the top of the file. It handles the rest.
+A weekly investing tool that tells you how to split your paycheck
+between Bitcoin and everything else, based on where BTC sits in its
+market cycle and what percentage of your portfolio it already occupies.
 
 ---
 
-## Setup
+## Quick start (Mac)
 
-```bash
-pip install requests yfinance
-python3 btc_dca.py
-```
+1. Click the green **Code** button on this page → **Download ZIP**
+2. Unzip the folder anywhere (Desktop is fine)
+3. Double-click **RunBTCDCA.command**
 
-**First run:** downloads ~12 years of real BTC price history, tests
-thousands of parameter combinations in seconds, prints full backtest
-results. Re-optimizes automatically every 30 days.
+That's it. The first time it runs, it installs everything it needs
+automatically (takes about 30 seconds). Every time after that it
+goes straight to the tool.
 
-**Every run after:** three questions, one number to copy to your exchange.
+> **First-time Mac security prompt:** macOS may say the file "cannot
+> be opened because it is from an unidentified developer." If you see
+> this, right-click the file → **Open** → **Open** in the dialog.
+> You only have to do this once.
 
----
-
-## Configuration
-
-Everything you'd want to change lives at the top of `btc_dca.py`.
-Nothing else needs touching.
-
-```python
-# ── What you put in ────────────────────────────────────────────
-BTC_TARGET_PCT = 20.0   # target Bitcoin as % of total portfolio
-BASE_DEPOSIT   = 2000   # total weekly investment across all assets ($)
-                        # BTC slice = BASE_DEPOSIT × BTC_TARGET_PCT%
-                        # e.g. $2,000 × 20% = $400 baseline into BTC
-
-# ── Portfolio guardrails ───────────────────────────────────────
-BTC_FLOOR_PCT   = 10.0  # if BTC drops below this → force bear-rate buying
-BTC_CEILING_PCT = 40.0  # if BTC rises above this → skip BTC buy this week
-
-# ── How aggressive the optimizer can be ───────────────────────
-BEAR_MULT_MIN = 1.0     # minimum bear multiplier (1.0 = no scaling)
-BEAR_MULT_MAX = 4.0     # maximum bear multiplier (4.0 = 4× your BTC base)
-NEUT_MULT_MIN = 0.5     # minimum neutral multiplier
-NEUT_MULT_MAX = 1.5     # maximum neutral multiplier
-BULL_MULT_MIN = 0.25    # minimum bull multiplier
-BULL_MULT_MAX = 1.0     # maximum bull multiplier
-
-# ── Cash reserve sizing ────────────────────────────────────────
-AVG_MULT_MAX = 2.0   # max weighted-average multiplier across all weeks
-                     # at 2.0, you need ~2× your BTC base ($800) in
-                     # liquid cash available at all times
-AVG_MULT_MIN = 0.4   # prevents "do almost nothing" strategies
-
-# ── Signal sensitivity ─────────────────────────────────────────
-REGIME_MA_WEEKS = 20  # weeks of history for bull/bear/neutral detection
-                      # 20w is the standard used by most BTC analysts
-                      # lower = reacts faster, more false signals
-                      # higher = slower, more stable
-```
+**Requires Python 3.** If the script says Python isn't installed,
+download it from [python.org/downloads](https://www.python.org/downloads/)
+then double-click again.
 
 ---
 
 ## What it asks each week
 
-1. **How much do you have to invest this round?** — whatever cash you
-   have available (weekly, biweekly, any amount)
-2. **Your total BTC holdings** — in BTC, across all wallets/exchanges
-3. **Value of your other investments** — stocks, ETFs, 401k in dollars
+When you run it, it asks three things:
 
-The live BTC price is fetched automatically from Coinbase or CoinGecko.
+1. **How much do you have to invest this round?** — whatever cash you
+   have available this week or pay period (any amount)
+2. **Your total BTC holdings** — in BTC, across all wallets/exchanges
+3. **Value of your other investments** — stocks, ETFs, 401k, in dollars
+
+The current Bitcoin price is fetched automatically — you just confirm it.
 
 ---
 
-## What it outputs
+## What it tells you
 
 ```
   PORTFOLIO SNAPSHOT
@@ -101,137 +66,123 @@ The live BTC price is fetched automatically from Coinbase or CoinGecko.
         $800 at current price
 ```
 
-One market buy. Copy it to your exchange.
+One number to copy to your exchange. The rest goes to your other
+investments as usual.
 
 ---
 
-## How the math works
+## The two numbers to set before your first run
 
-**Step 1 — Baseline BTC amount:**
-`BASE_DEPOSIT × BTC_TARGET_PCT% = your BTC base per week`
-At $2,000 total and 20% target: $400/week baseline into BTC.
+Open `btc_dca.py` in any text editor and find these two lines near
+the top:
 
-**Step 2 — Regime multiplier scales it:**
+```python
+BTC_TARGET_PCT = 20.0   # target Bitcoin as % of your total portfolio
+BASE_DEPOSIT   = 2000   # your total weekly investment across everything ($)
+```
 
-| Regime | Condition | Multiplier range | BTC this week |
-|---|---|---|---|
-| BEAR ▼ | Price < 20w MA *and* MA falling | `BEAR_MULT_MIN`–`BEAR_MULT_MAX` | $400–$1,600 |
-| NEUTRAL ◆ | Transitioning | `NEUT_MULT_MIN`–`NEUT_MULT_MAX` | $200–$600 |
-| BULL ▲ | Price > 20w MA *and* MA rising | `BULL_MULT_MIN`–`BULL_MULT_MAX` | $100–$400 |
-
-The optimizer finds the specific multiplier within each range that
-produced the most BTC over 12 years of real data, subject to the
-`AVG_MULT_MAX` constraint.
-
-**Step 3 — Portfolio target nudge:**
-Whatever isn't going to BTC goes to your other investments. The
-portfolio snapshot shows your current allocation vs target.
-
-**Step 4 — Guardrails:**
-
-| Situation | What happens |
-|---|---|
-| BTC < `BTC_FLOOR_PCT` | Force bear-rate buying regardless of regime |
-| BTC > `BTC_CEILING_PCT` | Skip BTC buy entirely this week |
-
-Both show what the regime would have suggested, so you can override.
+Change them to match your situation. Everything else is automatic.
 
 ---
 
-## How the optimizer works
+## How it works (the idea)
 
-It searches combinations of six parameters against 12 years of weekly
-BTC closes:
+Bitcoin goes through distinct bull and bear markets, roughly following
+a 4-year cycle around each "halving." The tool detects which phase
+you're in using a 20-week moving average and scales your Bitcoin
+allocation accordingly:
 
-| Parameter | Found by optimizer | Range |
-|---|---|---|
-| `bear_multiplier` | yes | `BEAR_MULT_MIN` – `BEAR_MULT_MAX` |
-| `neutral_multiplier` | yes | `NEUT_MULT_MIN` – `NEUT_MULT_MAX` |
-| `bull_multiplier` | yes | `BULL_MULT_MIN` – `BULL_MULT_MAX` |
-| `ath_trigger_pct` | yes | 110–130% of ATH |
-| `t2_size_pct` | yes | 5–15% of holdings |
-| `ma_weeks` | yes | 8–20 weeks (recovery guard only) |
+- **Bear market:** price falling below its recent average — deploy
+  more into BTC. This is when it's cheap.
+- **Bull market:** price rising above its recent average — deploy
+  less. Price is expensive; don't over-buy at the top.
+- **Neutral:** transitioning — deploy a moderate amount.
 
-Scored on: `0.6 × btc_ratio + 0.4 × sharpe_proxy`
+The split between BTC and your other investments is driven by two
+things equally: the regime signal above, and how close your portfolio
+is to your target allocation. If you're well below 20% BTC, the tool
+leans toward BTC. If you're above 40%, it pauses BTC buying for the
+week.
 
-Where `btc_ratio` = strategy BTC accumulated ÷ flat $base/week DCA BTC.
-A ratio > 1.0 means regime timing genuinely beat buying the same
-amount every week. The `sharpe_proxy` prevents the optimizer finding
-strategies that work only because they take enormous drawdown risk.
-
-**The `AVG_MULT_MAX` constraint** is the key guard against exploitation.
-Without it, the optimizer would always push bear multipliers to their
-maximum, since "deploy more in cheap weeks" always beats "deploy less"
-vs a flat benchmark. `AVG_MULT_MAX = 2.0` means the weighted average
-multiplier across all historical weeks can't exceed 2×, which directly
-limits how much cash reserve you need to sustain the strategy.
-
-**`REGIME_MA_WEEKS = 20` is fixed** and not optimized. Optimizing the
-regime detection window risks overfitting to the specific turning points
-in this price history. The 20-week MA is a well-established signal —
-change it if you have a strong view, but the optimizer won't touch it.
+**Why no limit orders?** Tested against 12 years of real data — limit
+orders consistently underperformed just buying at market. With orders
+filling only ~20% of weeks, too much cash sits idle. The regime timing
+is what actually adds value.
 
 ---
 
 ## Backtest results (11.8 years of real BTC data)
 
 ```
-                          Strategy    Flat DCA    Buy&Hold
-  ──────────────────────────────────────────────────────
-  BTC accumulated           251.74      131.77        —
-  BTC ratio vs flat DCA      1.910x      1.000x
-  Final value ($)        15,760,129   8,249,827  126,829,757
+                          Strategy    Flat DCA
+  ────────────────────────────────────────────
+  BTC accumulated           251.74      131.77
+  BTC ratio vs flat DCA      1.91x       1.00x
+  Final value         $15,760,129   $8,249,827
   Max drawdown               82.3%
-  Avg multiplier              1.90×
 ```
 
-*Flat DCA: $400/week into BTC at spot, no regime scaling, same cadence.*
+*Flat DCA: same dollar amount into BTC every single week, no timing.*
 
-The 1.91x ratio means regime timing accumulated 91% more BTC than
-just buying the same amount every week. That's the entire edge —
-buying more when price is cheap (bear weeks), less when expensive (bull).
+The 1.91x ratio means the strategy accumulated 91% more BTC than
+just buying a fixed amount every week — by buying more when price was
+cheap and less when it was expensive.
 
 ---
 
-## Why no limit orders
+## Advanced configuration
 
-Tested empirically. Every limit-order configuration underperformed
-plain market buying over 11+ years. With ~20% fill rate, 80% of weeks
-the cash earmarked for limits sits idle while the DCA benchmark deploys
-100%. The small discount on fills doesn't compensate for idle cash.
-The regime multiplier is what actually works.
+Everything configurable lives at the top of `btc_dca.py`. The two
+you already set are the main ones. The rest have sensible defaults and
+only need changing if you want to tune the strategy's aggressiveness:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `BTC_TARGET_PCT` | 20.0 | Target % of portfolio in BTC |
+| `BASE_DEPOSIT` | 2000 | Total weekly investment ($) |
+| `BTC_FLOOR_PCT` | 10.0 | If BTC drops below this %, force aggressive buying |
+| `BTC_CEILING_PCT` | 40.0 | If BTC rises above this %, skip BTC buy this week |
+| `BEAR_MULT_MIN/MAX` | 1.0–4.0 | Range of bear-market multipliers for optimizer to search |
+| `NEUT_MULT_MIN/MAX` | 0.5–1.5 | Range of neutral multipliers |
+| `BULL_MULT_MIN/MAX` | 0.25–1.0 | Range of bull multipliers |
+| `AVG_MULT_MAX` | 2.0 | Max average weekly spend vs base — set this to how large a cash reserve you can maintain |
+| `REGIME_MA_WEEKS` | 20 | Weeks of history for bull/bear detection |
+
+The optimizer runs automatically every 30 days and finds the best
+specific values within these ranges using real BTC price history.
 
 ---
 
 ## Files
 
-| File | Purpose |
+| File | What it is |
 |---|---|
-| `btc_dca.py` | The whole program. Only file you need. |
-| `.btc_params.json` | Optimizer results (auto-generated, refreshes monthly) |
-| `.btc_cache.json` | Price history cache (refreshes every 6 hours) |
-| `.btc_memory.json` | Weekly state: ATH, recent price history |
+| `RunBTCDCA.command` | Double-click this to run (Mac) |
+| `btc_dca.py` | The program itself |
+| `requirements.txt` | Python dependencies (installed automatically) |
+| `.btc_params.json` | Optimizer results — auto-generated, safe to delete |
+| `.btc_cache.json` | Cached price history — auto-generated, safe to delete |
+| `.btc_memory.json` | Your weekly state — auto-generated, safe to delete |
 
-Dot-files are hidden on Mac/Linux. Delete any and the program
-regenerates on the next run.
+The dot-files (`.btc_*`) are hidden by default on Mac. They're
+created automatically and regenerated if deleted.
 
 ---
 
-## Caveats
+## Important caveats
 
-**82% max drawdown is real.** During 2022, a portfolio with significant
-BTC exposure dropped hard. The strategy accumulates more BTC on the
-way down — but dollar value still hurts. This is a long-term
-accumulation strategy, not capital preservation.
+**This is not financial advice.** This tool helps you implement a
+systematic strategy — it doesn't guarantee returns or protect against
+loss.
 
-**Regime detection lags 1–4 weeks.** You won't catch exact tops and
-bottoms. The edge comes from being correctly positioned during the
-bulk of each regime, not from perfect timing.
+**The 82% max drawdown is real.** During the 2022 bear market,
+Bitcoin fell ~75%. The strategy buys more during crashes, which means
+your portfolio value can drop sharply before recovering. Only use
+capital you're comfortable holding through multi-year downturns.
 
-**The optimizer can still exploit the benchmark** if you widen the
-bounds aggressively. `AVG_MULT_MAX` is your main protection — lower it
-if results look implausible, raise it if you have deep cash reserves
-and want the optimizer to explore more aggressive strategies.
+**Past performance doesn't guarantee future results.** The backtest
+covers one specific period of Bitcoin's history. Future cycles may
+behave differently.
 
-**It tells you what to do. You place the trades.** Nothing is
-automatic. A human reviews every order before money moves.
+**You place all trades manually.** The tool tells you what to buy —
+it never accesses your exchange or moves money automatically.
