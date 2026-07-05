@@ -71,6 +71,22 @@ BTC_CEILING_PCT = 40.0   # above this → skip BTC buy this week
 # Derived: baseline BTC allocation per week before regime scaling
 _BTC_BASE = BASE_DEPOSIT * BTC_TARGET_PCT / 100   # e.g. $2000 × 20% = $400
 
+# ── Regime multiplier bounds ──────────────────────────────────────────────────
+# The optimizer searches within these ranges to find the best multipliers.
+# Widen them if you want the optimizer to explore more aggressive or
+# conservative strategies. Narrowing them constrains the optimizer to
+# a specific style. The defaults are intentionally broad.
+#
+# Bear: how aggressively to buy during downtrends
+BEAR_MULT_MIN  = 1.0    # at minimum, deploy your full BTC base in a bear
+BEAR_MULT_MAX  = 4.0    # at maximum, deploy 4× your BTC base
+# Neutral: how to behave during transitioning/sideways markets
+NEUT_MULT_MIN  = 0.5    # can pull back significantly in ambiguous conditions
+NEUT_MULT_MAX  = 1.5    # or lean in — optimizer decides
+# Bull: how much to deploy when price is elevated
+BULL_MULT_MIN  = 0.25   # can pull back to 25% of base when price is expensive
+BULL_MULT_MAX  = 1.0    # or stay fully invested — optimizer decides
+
 PARAMS_MAX_AGE  = 30 * 86400
 PRICE_CACHE_AGE = 6  * 3600
 REGIME_MA_WEEKS = 20
@@ -124,15 +140,23 @@ class Params:
     ma_weeks:           int   = 12
 
 
+def _steps(lo: float, hi: float, n: int = 4) -> list[float]:
+    """n evenly-spaced values from lo to hi, rounded to 2dp."""
+    if n == 1:
+        return [round((lo + hi) / 2, 2)]
+    step = (hi - lo) / (n - 1)
+    return [round(lo + i * step, 2) for i in range(n)]
+
+
 SEARCH_SPACE = {
-    "bear_multiplier":    [1.5, 2.0, 2.5, 3.0],
-    "neutral_multiplier": [0.75, 1.0, 1.25],
-    "bull_multiplier":    [0.5, 0.75, 1.0],
+    "bear_multiplier":    _steps(BEAR_MULT_MIN, BEAR_MULT_MAX),   # 4 steps
+    "neutral_multiplier": _steps(NEUT_MULT_MIN, NEUT_MULT_MAX),   # 4 steps
+    "bull_multiplier":    _steps(BULL_MULT_MIN, BULL_MULT_MAX),    # 4 steps
     "ath_trigger_pct":    [110, 115, 120, 125, 130],
     "t2_size_pct":        [5, 8, 10, 12, 15],
     "ma_weeks":           [8, 12, 16, 20],
 }
-# 4×3×3×5×5×4 = 3,600 combinations — optimizer finishes in seconds
+# 4×4×4×5×5×4 = 6,400 combinations — still finishes in seconds
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +261,7 @@ class BacktestResult:
     bear_btc_ratio:   float    # btc_ratio during bear weeks only
     bull_btc_ratio:   float    # btc_ratio during bull weeks only
     neutral_btc_ratio:float
+    avg_multiplier:   float    # weighted avg multiplier across all weeks (target ≈ 1.0)
     final_btc:        float
     dca_btc:          float    # BTC if same dollars deployed at spot every week
     total_deposited:  float
@@ -256,14 +281,16 @@ def _backtest(prices: list[float], p: Params, base: float) -> Optional[BacktestR
     start_idx   = REGIME_MA_WEEKS
     start_price = prices[start_idx]
 
-    regime_btc = {"BEAR": 0.0, "BULL": 0.0, "NEUTRAL": 0.0}
-    regime_dca = {"BEAR": 0.0, "BULL": 0.0, "NEUTRAL": 0.0}
+    regime_btc   = {"BEAR": 0.0, "BULL": 0.0, "NEUTRAL": 0.0}
+    regime_dca   = {"BEAR": 0.0, "BULL": 0.0, "NEUTRAL": 0.0}
+    regime_weeks = {"BEAR": 0,   "BULL": 0,   "NEUTRAL": 0}
 
     for i in range(start_idx, len(prices) - 1):
         spot      = prices[i]
         next_spot = prices[i + 1]
         history   = prices[max(0, i - REGIME_MA_WEEKS - 1):i]
         regime    = detect_regime(history + [spot])
+        regime_weeks[regime] += 1
 
         plan = generate_orders(
             spot=spot, ath=max(prices[:i+1]),
@@ -276,10 +303,9 @@ def _backtest(prices: list[float], p: Params, base: float) -> Optional[BacktestR
         cash      += plan.deposit
         total_dep += plan.deposit
 
-        # DCA benchmark: flat base every week at spot — no regime scaling.
-        # This is what you'd accumulate by just buying $BASE each week without
-        # any strategy. The btc_ratio measures whether regime timing adds value
-        # on top of that baseline.
+        # Flat DCA benchmark: $base into BTC at spot every week, no regime scaling.
+        # This is the strategy you're replacing — same cash commitment per week,
+        # no timing. btc_ratio > 1.0 means regime timing genuinely beats this.
         dca_btc            += base / spot
         regime_dca[regime] += base / spot
 
@@ -302,14 +328,21 @@ def _backtest(prices: list[float], p: Params, base: float) -> Optional[BacktestR
 
     last        = prices[-1]
     final_value = btc * last + cash
-    dca_btc_total = dca_btc   # flat-base DCA BTC
-    dca_final   = dca_btc_total * last
+    dca_final   = dca_btc * last
     bah_final   = (total_dep / start_price) * last
     week_count  = len(prices) - 1 - start_idx
     roi         = (final_value / total_dep - 1) * 100 if total_dep else 0.0
 
     def _ratio(reg):
         return regime_btc[reg] / regime_dca[reg] if regime_dca[reg] > 0 else 1.0
+
+    # Weighted average multiplier across all weeks
+    total_weeks = sum(regime_weeks.values())
+    avg_mult = (
+        regime_weeks["BEAR"]    * p.bear_multiplier +
+        regime_weeks["NEUTRAL"] * p.neutral_multiplier +
+        regime_weeks["BULL"]    * p.bull_multiplier
+    ) / total_weeks if total_weeks else 1.0
 
     return BacktestResult(
         params=p,
@@ -320,6 +353,7 @@ def _backtest(prices: list[float], p: Params, base: float) -> Optional[BacktestR
         bear_btc_ratio=_ratio("BEAR"),
         bull_btc_ratio=_ratio("BULL"),
         neutral_btc_ratio=_ratio("NEUTRAL"),
+        avg_multiplier=avg_mult,
         final_btc=btc,
         dca_btc=dca_btc,
         total_deposited=total_dep,
@@ -331,9 +365,10 @@ def _backtest(prices: list[float], p: Params, base: float) -> Optional[BacktestR
 
 
 def _score(r: BacktestResult) -> float:
-    # Reward bear-market accumulation (the strategy's structural edge)
-    # and penalize excessive drawdown.
-    return 0.6 * r.bear_btc_ratio + 0.4 * r.sharpe_proxy
+    # btc_ratio: strategy BTC vs flat $base/week DCA with the same cadence.
+    # This is the honest question: does regime timing beat just buying the
+    # same amount every week? Weighted with sharpe to penalise reckless risk.
+    return 0.6 * r.btc_ratio + 0.4 * r.sharpe_proxy
 
 
 def _eval(args):
@@ -342,9 +377,23 @@ def _eval(args):
         p = Params(**combo)
     except TypeError:
         return None
+
+    # Hard constraint: prevent strategies that require unsustainable cash reserves.
+    # Bear weeks are ~35% of history; a 3× bear multiplier means your average
+    # weekly spend is ~1.5× base. Beyond ~2.0× average is genuinely unsustainable
+    # for most people. Use a simple unweighted proxy to filter obviously extreme combos.
+    approx_avg = (p.bear_multiplier + p.neutral_multiplier + p.bull_multiplier) / 3
+    if approx_avg > 2.0 or approx_avg < 0.4:
+        return None
+
     r = _backtest(prices, p, base)
     if r is None:
         return None
+
+    # Secondary check on actual historical avg (regime frequencies vary by dataset)
+    if r.avg_multiplier > 2.5 or r.avg_multiplier < 0.3:
+        return None
+
     return (_score(r), r)
 
 
@@ -512,21 +561,37 @@ def _save_json(path: Path, data: dict) -> None:
     except Exception:
         pass
 
-def load_params() -> Optional[Params]:
+def load_params() -> Optional[tuple["Params", Optional[dict]]]:
+    """Returns (params, summary_dict) or None if missing/stale."""
     d = _load_json(PARAMS_FILE)
     if not d:
         return None
     if time.time() - d.get("saved_at", 0) > PARAMS_MAX_AGE:
         return None
     try:
-        return Params(**{k: v for k, v in d.items()
-                         if k in Params.__dataclass_fields__})
+        p = Params(**{k: v for k, v in d.items()
+                      if k in Params.__dataclass_fields__})
+        summary = d.get("summary")   # may be None for old cache files
+        return p, summary
     except Exception:
         return None
 
-def save_params(p: Params) -> None:
+def save_params(p: Params, result: "BacktestResult") -> None:
     d = asdict(p)
     d["saved_at"] = time.time()
+    d["summary"] = {
+        "weeks":         result.weeks,
+        "final_btc":     result.final_btc,
+        "dca_btc":       result.dca_btc,
+        "btc_ratio":     result.btc_ratio,
+        "bear_ratio":    result.bear_btc_ratio,
+        "neutral_ratio": result.neutral_btc_ratio,
+        "bull_ratio":    result.bull_btc_ratio,
+        "final_value":   result.final_value,
+        "dca_final":     result.dca_final_value,
+        "max_dd":        result.max_drawdown_pct,
+        "avg_mult":      result.avg_multiplier,
+    }
     _save_json(PARAMS_FILE, d)
 
 def load_memory() -> dict:
@@ -554,6 +619,7 @@ def print_backtest_summary(r: BacktestResult) -> None:
           f"{r.dca_final_value:>10,.0f}  {r.bah_final_value:>10,.0f}")
     print(f"  {'Strategy deployed ($)':22}  {r.total_deposited:>10,.0f}")
     print(f"  {'Max drawdown':22}  {r.max_drawdown_pct:>9.1f}%")
+    print(f"  {'Avg multiplier':22}  {r.avg_multiplier:>9.2f}\u00d7  (1.0 = same total spend as flat DCA)")
     print()
     print(f"  Regime breakdown (vs flat ${BASE_DEPOSIT:,}/week DCA):")
     print(f"  {'─'*50}")
@@ -567,6 +633,27 @@ def print_backtest_summary(r: BacktestResult) -> None:
     print()
     print(f"  Flat DCA: ${_BTC_BASE:,.0f}/week into BTC at spot ({BTC_TARGET_PCT:.0f}% of ${BASE_DEPOSIT:,} base, no regime scaling).")
     print(f"  A ratio > 1.0 means regime-scaling genuinely accumulated more BTC.")
+    print()
+
+
+def print_cached_summary(s: dict) -> None:
+    """Compact version of backtest results shown on every run (not just optimizer runs)."""
+    print(f"  {'':18}  {'Strategy':>10}  {'Flat DCA':>10}")
+    print(f"  {'─'*42}")
+    print(f"  {'BTC accumulated':18}  {s['final_btc']:>10.4f}  {s['dca_btc']:>10.4f}")
+    print(f"  {'BTC ratio':18}  {s['btc_ratio']:>9.3f}x  {'1.000x':>10}")
+    print(f"  {'Final value ($)':18}  {s['final_value']:>10,.0f}  {s['dca_final']:>10,.0f}")
+    print(f"  {'Max drawdown':18}  {s['max_dd']:>9.1f}%")
+    print(f"  {'Avg multiplier':18}  {s.get('avg_mult',1.0):>9.2f}\u00d7")
+    print()
+    print(f"  Regime breakdown (vs flat ${_BTC_BASE:,.0f}/week):")
+    for label, key in [("Bear", "bear_ratio"), ("Neutral", "neutral_ratio"), ("Bull", "bull_ratio")]:
+        ratio = s[key]
+        mark  = "✓" if ratio >= 1.0 else "·"
+        delta = (ratio - 1.0) * 100
+        sign  = "+" if delta >= 0 else ""
+        print(f"  {mark} {label:<8}  {ratio:.3f}x  ({sign}{delta:.1f}% BTC)")
+    print(f"\n  Based on {s['weeks']} weeks (~{s['weeks']//52:.0f} years) of real BTC history.")
     print()
 
 
@@ -584,11 +671,21 @@ def print_allocation(btc_amount: float, other_amount: float, ctx: dict) -> None:
     if ctx["total"] > 0:
         filled = max(0, min(20, int(cur / 5)))
         bar    = "█" * filled + "░" * (20 - filled)
-        print(f"\n  BTC allocation:  {cur:.1f}%   band: {BTC_FLOOR_PCT:.0f}% – {BTC_CEILING_PCT:.0f}%")
+        print(f"\n  BTC allocation:  {cur:.1f}%   band: {BTC_FLOOR_PCT:.0f}%–{BTC_CEILING_PCT:.0f}%")
         print(f"  [{bar}]")
-        floor_spaces = int(BTC_FLOOR_PCT / 5) * 2
-        ceil_spaces  = int(BTC_CEILING_PCT / 5) * 2
-        print(f"   {' ' * floor_spaces}↑{BTC_FLOOR_PCT:.0f}%{' ' * (ceil_spaces - floor_spaces - 4)}↑{BTC_CEILING_PCT:.0f}%")
+        # Arrow positions: bar starts at col 3 (after "  ["), each block = 1 char = 5%
+        # floor at 10% = block index 2, ceiling at 40% = block index 8
+        floor_idx = int(BTC_FLOOR_PCT / 5)   # 2
+        ceil_idx  = int(BTC_CEILING_PCT / 5)  # 8
+        # Build arrow line: 3 chars prefix ("   "), then position arrows at block indices
+        arrow_line = [" "] * 24
+        for idx, label in [(floor_idx, f"↑{BTC_FLOOR_PCT:.0f}%"),
+                           (ceil_idx,  f"↑{BTC_CEILING_PCT:.0f}%")]:
+            pos = 3 + idx   # 3-char prefix "   "
+            for j, ch in enumerate(label):
+                if pos + j < len(arrow_line):
+                    arrow_line[pos + j] = ch
+        print("  " + "".join(arrow_line))
     else:
         print("\n  No portfolio data yet — using regime signal only")
 
@@ -678,16 +775,23 @@ def main() -> None:
     print("─" * 60)
 
     # ── Step 1: Load or optimize params ──────────────────────────────────────
-    params = load_params()
-    if params is None:
+    loaded = load_params()
+    if loaded is None:
         print("\n  No settings found (or over 30 days old) — running optimizer.\n")
         prices = fetch_price_history()
         result = optimize(prices, _BTC_BASE)
         params = result.params
-        save_params(params)
+        save_params(params, result)
         print_backtest_summary(result)
     else:
-        print("  Settings loaded  (re-optimizes automatically every 30 days)\n")
+        params, summary = loaded
+        days_old = int((time.time() - _load_json(PARAMS_FILE).get("saved_at", 0)) / 86400)
+        print(f"  Settings loaded  ({days_old}d old, re-optimizes at 30d)\n")
+        if summary:
+            print_cached_summary(summary)
+        else:
+            # Old cache file without summary — will refresh next optimization cycle
+            print("  (Run with .btc_params.json deleted to see backtest summary)\n")
 
     # ── Step 2: Live price ────────────────────────────────────────────────────
     print("  Fetching live BTC price...", end=" ", flush=True)
