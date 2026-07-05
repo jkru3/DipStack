@@ -87,9 +87,30 @@ NEUT_MULT_MAX  = 1.5    # or lean in — optimizer decides
 BULL_MULT_MIN  = 0.25   # can pull back to 25% of base when price is expensive
 BULL_MULT_MAX  = 1.0    # or stay fully invested — optimizer decides
 
+# ── Optimizer constraints ─────────────────────────────────────────────────────
+# These cap how extreme the optimizer's chosen multipliers can be in aggregate.
+# They answer the question: "how much cash reserve do I need to sustain this?"
+#
+# AVG_MULT_MAX: the weighted-average multiplier across all regime weeks must
+#   stay below this. At 2.0, you'd spend up to 2× your base on average —
+#   meaning you need roughly 2× your base in available cash at all times.
+#   Lower = more conservative cash requirements. Raise if you have deep reserves.
+#
+# AVG_MULT_MIN: prevents the optimizer finding "do almost nothing" strategies
+#   that technically beat DCA by deploying < 50% of base most weeks.
+AVG_MULT_MAX = 2.0
+AVG_MULT_MIN = 0.4
+
+# ── Regime detection window ───────────────────────────────────────────────────
+# How many weeks of price history to use for the moving average that detects
+# bull/bear/neutral. The 20-week MA is the standard used by most BTC analysts.
+# Lower = reacts faster but more false signals. Higher = slower but more stable.
+# This is intentionally NOT optimized — fixing it prevents overfitting to one
+# cycle's specific turning points. Change it here if you have a strong view.
+REGIME_MA_WEEKS = 20
+
 PARAMS_MAX_AGE  = 30 * 86400
 PRICE_CACHE_AGE = 6  * 3600
-REGIME_MA_WEEKS = 20
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +404,7 @@ def _eval(args):
     # weekly spend is ~1.5× base. Beyond ~2.0× average is genuinely unsustainable
     # for most people. Use a simple unweighted proxy to filter obviously extreme combos.
     approx_avg = (p.bear_multiplier + p.neutral_multiplier + p.bull_multiplier) / 3
-    if approx_avg > 2.0 or approx_avg < 0.4:
+    if approx_avg > AVG_MULT_MAX or approx_avg < AVG_MULT_MIN:
         return None
 
     r = _backtest(prices, p, base)
@@ -391,7 +412,7 @@ def _eval(args):
         return None
 
     # Secondary check on actual historical avg (regime frequencies vary by dataset)
-    if r.avg_multiplier > 2.5 or r.avg_multiplier < 0.3:
+    if r.avg_multiplier > AVG_MULT_MAX * 1.25 or r.avg_multiplier < AVG_MULT_MIN * 0.75:
         return None
 
     return (_score(r), r)
