@@ -1,98 +1,197 @@
-# Bitcoin Weekly DCA Strategy
+# BTC DCA — Regime-Aware Strategy
 
-## The core idea (read this first)
+## What this is
 
-Buying Bitcoin on a fixed schedule ("dollar-cost averaging") is simple and works well over time. This tool does something slightly smarter without requiring you to watch the market: instead of buying at whatever price happens to be when you get paid, it places **limit orders** a bit below the current price, so you only buy when the market dips toward you. It does the same thing in reverse for selling small amounts on the way up.
+A weekly investing tool that looks at your full financial picture —
+how much you have to invest, what your portfolio looks like, and where
+Bitcoin currently sits in its market cycle — and tells you exactly how
+to split your money and what orders to place.
 
-The goal isn't to "beat the market" with predictions. It's to **end up holding more Bitcoin per dollar spent** than you would with plain weekly buying — by taking advantage of Bitcoin's normal week-to-week price swings instead of ignoring them.
-
-There are two parts:
-
-1. **The optimizer** — looks at years of real Bitcoin price history and tests thousands of combinations of buy/sell settings to find which ones would have worked best in the past. You run this occasionally (e.g. every few months), not every week.
-2. **The weekly calculator** — takes those settings and tells you exactly what orders to place this week, in plain language. This is the one you (or someone with zero technical background) runs regularly.
-
----
-
-## Files in this project
-
-
-| File                 | What it does                                                                                               |
-| -------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `config.py`          | All the adjustable settings and ranges in one place. You rarely need to open this.                         |
-| `strategy.py`        | The actual buy/sell rules — how prices and order sizes get calculated.                                     |
-| `backtest.py`        | Tests the strategy against real historical Bitcoin prices to see how it would have performed.              |
-| `main.py`            | The full command-line tool — runs the optimizer and the detailed order calculator. For the technical user. |
-| `weekly.py`          | **The simple version.** Double-click it, answer two questions, get plain-English instructions. For anyone. |
-| `params.json`        | The strategy settings the optimizer found (created automatically — don't edit by hand).                    |
-| `weekly_memory.json` | `weekly.py` saves your last known state here automatically, so you don't have to track anything yourself.  |
-
+You tell it how much cash you have this week. It tells you:
+- How much to put into Bitcoin
+- How much to put into your other investments (stocks, ETFs, 401k)
+- Exactly which BTC orders to place and at what prices
 
 ---
 
-## What the variables mean
+## Setup
 
-Note: `weekly.py` fetches the current Bitcoin price automatically and lets the person choose weekly or biweekly each time they run it — they never type a price unless the automatic check fails, and the moving-average window quietly adjusts itself to match whichever cadence they picked.
+```bash
+pip install requests yfinance
+python3 btc_dca.py
+```
 
+Open `btc_dca.py` and set the two values near the top before your
+first run:
 
-| Variable          | Plain meaning                                                                                                                                                                                                            |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `weekly_deposit`  | How much cash you're putting in this round.                                                                                                                                                                              |
-| `bl1_pct`         | How far below the current price the first buy order sits (e.g. 2.5% under).                                                                                                                                              |
-| `bl2_pct`         | How far below the current price the second, larger buy order sits — a deeper dip than BL1.                                                                                                                               |
-| `t1_pct`          | How far above the current price a normal sell order sits.                                                                                                                                                                |
-| `t1_size_pct`     | How much of one week's deposit to sell, when a normal sell happens.                                                                                                                                                      |
-| `ma_weeks`        | The number of past weeks averaged together to judge whether the price has "recovered."                                                                                                                                   |
-| `ath_trigger_pct` | How far past the all-time high the price needs to go before the bigger profit-taking sells kick in.                                                                                                                      |
-| `t2_size_pct`     | What percentage of your *total* holdings to sell when that all-time-high trigger fires.                                                                                                                                  |
-| `gw_offset`       | A small buffer ($10–$100) placed just past round numbers like $100,000 or $105,000 — because lots of other traders place orders exactly *at* round numbers, so sitting just past them tends to get filled more reliably. |
-| `carry_spot_pct`  | If nothing got bought last week (both limit orders missed), what percent of this week's cash to just buy at market price instead of trying again.                                                                        |
+```python
+BTC_TARGET_PCT = 20.0   # target Bitcoin as % of your total portfolio
+BASE_DEPOSIT   = 725    # your comfortable average weekly investment ($)
+```
 
+**First run:** downloads ~12 years of BTC history, tests ~470,000
+parameter combinations across bull, bear, and neutral regimes. Takes
+5–10 minutes. Repeats automatically every 30 days.
 
----
-
-## Why this is useful, even if you're not technical
-
-If you've ever dollar-cost averaged into Bitcoin, you already do the hard part — showing up consistently. This tool doesn't change that discipline. It just adds two refinements most people skip because they're tedious to do by hand every week:
-
-- **Buying dips automatically.** Instead of buying at whatever the price is the moment you get paid, your order sits slightly below the market and waits. Some weeks it won't fill at all (price didn't dip) — that's fine, you just buy at market instead, so you're never left on the sidelines.
-- **Taking small profits on the way up**, so a portion of gains gets locked in rather than just hoping a peak doesn't reverse.
-
-You don't need to understand the mechanics to benefit from them. You need to: answer two questions each week (current price, and how much cash), copy the resulting order onto your exchange, and repeat.
+**Every run after:** loads settings, fetches live price, asks three
+questions, prints your split and orders.
 
 ---
 
-## Giving this to someone with no technical background
+## What it asks each week
 
-### One-time setup (you do this part)
+1. **How much do you have to invest this round?** — your available
+   cash, whatever it is this week or this pay period
+2. **Your total BTC holdings** — in BTC, across all wallets/exchanges
+3. **Value of your other investments** — stocks, ETFs, 401k in dollars
+4. **Did last week's limit orders fill?** — only if you had limits out
 
-1. Run the optimizer yourself: `python main.py optimize`. This creates `params.json`.
-2. Make a folder for them containing exactly these four files:
-  - `weekly.py`
-  - `params.json`
-  - `strategy.py`
-  - `config.py` (Don't include `main.py` or `backtest.py` — they don't need them and it keeps things simple.)
-3. Make sure Python is installed on their computer, and that they can double-click a `.py` file to run it. On most systems, double-clicking `weekly.py` is enough. If double-clicking just opens a text editor instead of running it, set up a simple shortcut/alias that runs: `python3 weekly.py` from inside that folder — a one-time five-minute fix.
+---
 
-### What you tell them, verbatim
+## What it outputs
 
-> "Whenever you want to add money to Bitcoin, open this folder and double-click `weekly.py`. It'll check the current price for you automatically. Just answer its questions — whether you're investing weekly or every two weeks, and how much you're adding — and it'll tell you exactly what to buy or sell and at what price. Copy those orders onto your exchange. At the end it'll ask whether each order actually went through — just answer honestly, since it uses that to figure out next time's orders correctly."
+**First: your split**
+```
+  PORTFOLIO SNAPSHOT
+  ──────────────────────────────────────────────────────
+  BTC allocation:  14.2%  [target: 20%]
+  [██░░░░░░░░░░░░░░░░░░]
+  ↑ 5.8% under target — nudging more toward BTC this week
 
-### What actually happens when they run it
+  You have $1,500 to invest this round.
 
-1. It fetches the current Bitcoin price on its own (no need to look it up, unless their internet is down — then it'll ask them to type it in).
-2. It asks: weekly or every two weeks?
-3. It asks how much cash they're adding this time.
-4. It asks how much Bitcoin they currently hold in total.
-5. It prints out, in plain sentences, exactly what to buy or sell, at what price, and why — no tables, no jargon.
-6. It asks two yes/no questions about what filled, then quietly saves that so next time's numbers are correct. They never have to remember or write anything down themselves.
+  → Put $950 into Bitcoin   (63% of this round)
+  → Put $550 into your other investments   (37% of this round)
+```
 
-### What they never have to do
+**Then: your BTC orders**
+```
+  ▼ BEAR — ORDERS  (deposit this round: $950)
+  ──────────────────────────────────────────────────────
+  ℹ  BEAR market detected — deploying 2× base ($950).
+     Buying full amount at market now; limits set for extra accumulation.
 
-- Install anything beyond the one-time setup
-- Read or understand any code
-- Track prices, dates, or past orders themselves
-- Touch `main.py`, `backtest.py`, or `config.py`
+  1. ▲ BUY  —  at market now
+        0.015873 BTC  (≈ $950)
+        Full bear deposit at market — price is cheap
 
-### The only manual step left
+  2. ▲ BUY  —  limit at $57,930
+        0.016397 BTC  (≈ $950)
+        3% under spot  (+$30 above nearest $1k level)
 
-They still have to copy the order details onto their exchange by hand — this tool tells you *what* to do, it doesn't place trades for you. That's intentional: it keeps a real human checking each order before money moves.
+  3. ▲ BUY  —  limit at $51,930
+        0.018294 BTC  (≈ $950)
+        9% under spot  (+$30 above nearest $1k level)
+```
+
+---
+
+## How the split is calculated
+
+The tool balances two things:
+
+**Regime signal** (primary): Is Bitcoin in a bear, neutral, or bull
+market? Bear = put more into BTC this week. Bull = put a bit less.
+This is determined by the 20-week moving average — no prediction, just
+detecting where we are now.
+
+**Portfolio target** (secondary nudge): Are you above or below your
+20% BTC target? If you're 10% under, the tool nudges the BTC slice
+a bit higher. If you're over target, it nudges toward stocks. The nudge
+is capped at ±15% so it never overrides the regime signal — it just
+tilts within the regime's range.
+
+The remaining cash after the BTC slice is your stocks/ETFs allocation
+for the week. The tool doesn't pick which stocks — just gives you the
+dollar amount to put into whatever your normal index fund or 401k
+contribution is.
+
+---
+
+## How regime detection works
+
+Uses Bitcoin's 20-week moving average with slope confirmation:
+
+| Condition | Regime | Effect |
+|---|---|---|
+| Price above MA *and* MA rising | **BULL ▲** | Smaller BTC slice, shallow buy limits (0.5–2% under spot) |
+| Price below MA *and* MA falling | **BEAR ▼** | Larger BTC slice, deeper limits (3–12%), full amount at market |
+| Anything else | **NEUTRAL ◆** | Moderate BTC slice, limits for dips |
+
+This is detection with a 1–4 week lag, not prediction. That's fine —
+the goal is to be positioned correctly during the bulk of each regime.
+
+---
+
+## Backtest results (11.8 years of real BTC data)
+
+```
+                          Strategy   Plain DCA    Buy&Hold
+  ──────────────────────────────────────────────────────
+  ROI                      5778.5%    3408.5%    28263.8%
+  BTC accumulated           400.18     238.84        n/a
+  BTC ratio vs DCA            1.68x      1.00x
+  Max drawdown                82.4%
+
+  Regime breakdown:
+  ✓ Bear markets    3.0x DCA  (+200% BTC accumulated)
+  ✓ Neutral         1.25x DCA  (+25% BTC accumulated)
+  ✓ Bull markets    1.0x DCA   (matches DCA, stays invested)
+```
+
+The strategy's edge is in bear markets — deploying more capital when
+price is cheap accumulates significantly more BTC than plain weekly
+buying. In bull markets it stays close to DCA performance rather than
+over-paying.
+
+---
+
+## What the parameters mean
+
+| Parameter | What it does |
+|---|---|
+| `BTC_TARGET_PCT` | Your target Bitcoin allocation as % of total portfolio |
+| `BASE_DEPOSIT` | Your average comfortable weekly investment. Regime multipliers scale from this. |
+| `bear_multiplier` | How aggressively to deploy in a bear (e.g. 2.0 = double your base into BTC) |
+| `neutral_multiplier` | Scaling in neutral conditions (typically 1.0–1.25×) |
+| `bull_multiplier` | Scaling in a bull run (typically 0.5–0.75× — price is expensive) |
+| `bear_bl1_pct / bear_bl2_pct` | Bear market limit depths — deeper since meaningful dips are common |
+| `bull_bl1_pct / bull_bl2_pct` | Bull market limit depths — shallower since dips are small |
+| `bull_carry_pct` | % of deposit to buy at market in bull/neutral (rest waits for limits) |
+| `ath_trigger_pct` | Price must exceed this % of all-time high to trigger the ATH sell |
+| `t2_size_pct` | % of total BTC holdings to sell when ATH trigger fires (the only sell) |
+| `ma_weeks` | Recovery guard: after a crash buy, no ATH sells until price is back above this MA |
+| `gw_offset` | Dollar nudge past round numbers where other traders cluster orders |
+
+---
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `btc_dca.py` | The whole program. Only file you need. |
+| `.btc_params.json` | Optimized parameters (auto-generated, refreshes monthly) |
+| `.btc_cache.json` | Price history cache (refreshes every 6 hours) |
+| `.btc_memory.json` | Weekly state: ATH, price history, last fill status |
+
+Dot-files are hidden by default on Mac/Linux. Delete any and the
+program regenerates on next run.
+
+---
+
+## Honest caveats
+
+**The 82% max drawdown is real.** During the 2022 bear, your portfolio
+would have been down ~82% from its peak. The strategy helps you
+accumulate more BTC on the way down — but it doesn't protect your
+dollar value. This is a long-term Bitcoin accumulation strategy, not
+a capital-preservation strategy.
+
+**Regime detection lags by 1–4 weeks.** You won't be perfectly
+positioned at every turn. The edge comes from being roughly right
+during the bulk of each regime, not from catching exact tops and
+bottoms.
+
+**It tells you what to do. You place the trades.** Orders are never
+placed automatically. That's intentional — a human reviews every order
+before money moves.
